@@ -1,0 +1,54 @@
+name: Mood
+
+on:
+  schedule:
+    - cron: "20 0 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [build_svg.py, mood.py, .github/workflows/mood.yml]
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency: mood
+
+jobs:
+  mood:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Draw the card for today's mood
+        env:
+          GH_LOGIN: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ secrets.MOOD_TOKEN || github.token }}
+        run: |
+          mood=$(python3 mood.py)
+          echo "mood is $mood"
+          mkdir card
+          python3 build_svg.py card "$mood"
+      - name: Publish to the output branch
+        run: |
+          if git ls-remote --exit-code --heads origin output > /dev/null; then
+            git fetch --quiet --depth 1 origin output
+            git worktree add --detach published FETCH_HEAD
+          else
+            git worktree add --orphan -b output published
+          fi
+          cp card/*.svg published/
+          cd published
+          git add ./*.svg
+          last_commit=$(git log -1 --format=%ct 2> /dev/null || echo 0)
+          if git diff --cached --quiet && [ $(($(date +%s) - last_commit)) -lt 3888000 ]; then
+            echo "The card is unchanged, nothing to publish"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty --quiet --message "draw the day's mood"
+          git push --quiet origin HEAD:output
+      - name: Keep the schedule enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method PUT "repos/$GITHUB_REPOSITORY/actions/workflows/mood.yml/enable"
